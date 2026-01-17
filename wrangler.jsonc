@@ -1,0 +1,8 @@
+{
+  "name": "crawler-lab-site",
+  "compatibility_date": "2026-01-17",
+  "main": "src/index.ts",
+  "kv_namespaces": [
+    { "binding": "CRAWLER_KV", "id": "ee9671c071e04663912871def607ba1b" }
+  ]
+}

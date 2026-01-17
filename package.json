@@ -1,0 +1,14 @@
+{
+  "name": "crawler-lab-site",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260117.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.59.2"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  }
+}
