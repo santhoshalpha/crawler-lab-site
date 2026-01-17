@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crawler Lab</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; line-height: 1.6; }
+      code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
+      .card { border: 1px solid #e8e8e8; border-radius: 14px; padding: 16px; margin: 16px 0; }
+      .muted { color: #666; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <h1>🕵️ Crawler Lab Website</h1>
+    <p class="muted">Deployed target site to test AI crawler detection + logging.</p>
+
+    <div class="card">
+      <h2>Paths</h2>
+      <ul>
+        <li><a href="/public/">/public/</a></li>
+        <li><a href="/pricing/">/pricing/</a></li>
+        <li><a href="/hidden/">/hidden/</a></li>
+        <li><a href="/robots.txt">/robots.txt</a></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Next</h2>
+      <p>We’ll put a Cloudflare Worker in front to detect <code>GPTBot</code>, <code>ClaudeBot</code>, <code>PerplexityBot</code> in real time.</p>
+    </div>
+  </body>
+</html>
