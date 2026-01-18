@@ -1,8 +1,17 @@
 {
   "name": "crawler-lab-site",
+  "account_id": "9aacba00fc6abab0d432eee23033f17d",
   "compatibility_date": "2026-01-17",
   "main": "src/index.ts",
   "kv_namespaces": [
     { "binding": "CRAWLER_KV", "id": "ee9671c071e04663912871def607ba1b" }
   ]
+//   "durable_objects": {
+//   "bindings": [
+//     { "name": "LOGGER_DO", "class_name": "LoggerDO" }
+//   ]
+// },
+// "migrations": [
+//   { "tag": "v1", "new_classes": ["LoggerDO"] }
+// ]
 }

@@ -1,4 +1,4 @@
-export type BotFamily = "openai" | "perplexity" | "anthropic";
+export type BotFamily = "openai" | "perplexity" | "anthropic" | "google";
 export type BotType = "training" | "search" | "user";
 export type Confidence = "high" | "medium" | "low";
 

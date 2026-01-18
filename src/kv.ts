@@ -1,4 +1,5 @@
 import type { BotFamily, BotHit, BotType } from "./types";
+import { incrHourlyRollup } from "./rollups";
 
 export function tenantKeyFromHost(host: string) {
   // v1: each hostname = one tenant/site
@@ -38,7 +39,7 @@ export async function recordHit(kv: KVNamespace, hostKey: string, hit: BotHit) {
   await kvIncr(kv, `stats:${hostKey}:${fam}:total`);
   await kvIncr(kv, `stats:${hostKey}:${fam}:${type}`);
   await kv.put(`stats:${hostKey}:${fam}:last_seen`, hit.ts);
-
+await incrHourlyRollup(kv, hostKey, fam, hit.ts);
   // per-path
   await kvIncr(kv, `stats:${hostKey}:${fam}:path:${hit.path}`);
 
