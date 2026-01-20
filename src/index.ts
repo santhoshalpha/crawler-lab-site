@@ -1,9 +1,21 @@
+// src/index.ts
 import { detectBot } from "./botDetect";
 import type { BotHit, BotFamily } from "./types";
 import { tenantKeyFromHost, getClientIp, recordHit, readStats } from "./kv";
-import { getHostConfig, setHostConfig, hostAllowed, toPublicConfig } from "./config";
+import {
+  getHostConfig,
+  setHostConfig,
+  hostAllowed,
+  toPublicConfig,
+} from "./config";
 import { readHourlyRollups } from "./rollups";
-import { normalizeKey, unauthorized, forbidden, verifyKeyOrNull } from "./auth";
+import {
+  normalizeKey,
+  unauthorized,
+  forbidden,
+  verifyKeyOrNull,
+} from "./auth";
+import { dashboardHtml } from "./dashboard";
 
 /* ---------------- helpers ---------------- */
 
@@ -29,7 +41,7 @@ export default {
       // global admin key only you know (wrangler secret)
       ADMIN_KEY: string;
 
-      // optional global fallback keys during transition (not required)
+      // optional global fallback keys during transition
       INGEST_KEY?: string;
       DASHBOARD_KEY?: string;
     },
@@ -38,11 +50,18 @@ export default {
     const url = new URL(request.url);
 
     // worker host (where this worker is running)
-    const host = url.hostname;
+    const workerHost = url.hostname;
 
     // tenant host (can be overridden via ?host=... for querying other sites)
-    const tenantHost = url.searchParams.get("host") || host;
-    const hostKey = tenantKeyFromHost(tenantHost);
+    const tenantHost = url.searchParams.get("host") || workerHost;
+    const tenantKey = tenantKeyFromHost(tenantHost);
+
+    /* ---------- dashboard page ---------- */
+    if (url.pathname === "/dashboard") {
+      return new Response(dashboardHtml(""), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
 
     /* ---------- health ---------- */
     if (url.pathname === "/api/health") {
@@ -50,34 +69,53 @@ export default {
     }
 
     /* ---------- admin auth helper ---------- */
-    const requireAdmin = () => {
+    const requireAdmin = (): Response | null => {
       const k = normalizeKey(request.headers.get("x-admin-key"));
-      if (!env.ADMIN_KEY || k !== env.ADMIN_KEY) return unauthorized("admin_unauthorized");
+      if (!env.ADMIN_KEY || k !== env.ADMIN_KEY)
+        return unauthorized("admin_unauthorized");
       return null;
     };
 
-    /* ---------- config (admin only) ---------- */
+    /* ---------- tenant auth (dashboard) ---------- */
+    async function requireDashboardFor(tenant: string): Promise<Response | null> {
+      const cfg = await getHostConfig(env.CRAWLER_KV, tenant);
+      if (!cfg) return unauthorized("tenant_not_configured");
+      if (!hostAllowed(cfg, tenant)) return forbidden("host_not_allowed");
+
+      const provided = normalizeKey(request.headers.get("x-dashboard-key"));
+
+      // normal per-tenant dashboard key
+      let ok = await verifyKeyOrNull(provided, cfg.dashboard_key_hash);
+
+      // optional global fallback (plaintext equality, not hashed)
+      if (!ok && env.DASHBOARD_KEY && provided === env.DASHBOARD_KEY) ok = true;
+
+      return ok ? null : unauthorized("dashboard_unauthorized");
+    }
+
+    /* ---------- ingest auth (per-tenant) ---------- */
+    async function requireIngestFor(tenant: string): Promise<Response | null> {
+      const cfg = await getHostConfig(env.CRAWLER_KV, tenant);
+      if (!cfg) return unauthorized("tenant_not_configured");
+      if (!hostAllowed(cfg, tenant)) return forbidden("host_not_allowed");
+
+      const provided = normalizeKey(request.headers.get("x-ingest-key"));
+
+      // normal per-tenant ingest key
+      let ok = await verifyKeyOrNull(provided, cfg.ingest_key_hash);
+
+      // optional global fallback (plaintext equality)
+      if (!ok && env.INGEST_KEY && provided === env.INGEST_KEY) ok = true;
+
+      return ok ? null : unauthorized("ingest_unauthorized");
+    }
+
+    /* ---------- config (ADMIN ONLY) ---------- */
     if (url.pathname === "/api/config" && request.method === "GET") {
-      // Read config should be protected too (either admin or tenant dashboard key).
-      // We’ll allow admin OR dashboard key.
-      const cfg = await getHostConfig(env.CRAWLER_KV, tenantHost);
-
       const adminErr = requireAdmin();
-      if (!adminErr) {
-        return json({ ok: true, host: tenantHost, config: toPublicConfig(cfg) });
-      }
+      if (adminErr) return adminErr;
 
-      // Not admin -> try dashboard key
-      const dashKey = normalizeKey(request.headers.get("x-dashboard-key"));
-      const okDash =
-        (cfg && (await verifyKeyOrNull(dashKey, cfg.dashboard_key_hash))) ||
-        (env.DASHBOARD_KEY ? await verifyKeyOrNull(dashKey, await crypto.subtle
-          .digest("SHA-256", new TextEncoder().encode(env.DASHBOARD_KEY))
-          .then((b) => Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join(""))
-        ) : false);
-
-      if (!okDash) return unauthorized("dashboard_unauthorized");
-
+      const cfg = await getHostConfig(env.CRAWLER_KV, tenantHost);
       return json({ ok: true, host: tenantHost, config: toPublicConfig(cfg) });
     }
 
@@ -86,11 +124,13 @@ export default {
       if (adminErr) return adminErr;
 
       const body = (await request.json()) as any;
+
       if (!body || typeof body.customer !== "string" || typeof body.site_id !== "string") {
-        return badRequest("config requires { customer: string, site_id: string }");
+        return badRequest(
+          "config requires { customer: string, site_id: string, allowed_hosts?: string[], dashboard_key?: string, ingest_key?: string }"
+        );
       }
 
-      // Optional: keys + allowed_hosts
       const input = {
         customer: String(body.customer),
         site_id: String(body.site_id),
@@ -105,31 +145,13 @@ export default {
       return json({ ok: true, host: tenantHost, config: toPublicConfig(saved) });
     }
 
-    /* ---------- clear recent events (admin only) ---------- */
+    /* ---------- clear recent events (DASHBOARD KEY) ---------- */
     if (url.pathname === "/api/events/clear" && request.method === "POST") {
-      const adminErr = requireAdmin();
-      if (adminErr) return adminErr;
+      const authErr = await requireDashboardFor(tenantHost);
+      if (authErr) return authErr;
 
-      await env.CRAWLER_KV.put(`events:recent:${hostKey}`, JSON.stringify([]));
+      await env.CRAWLER_KV.put(`events:recent:${tenantKey}`, JSON.stringify([]));
       return json({ ok: true, host: tenantHost, cleared: true });
-    }
-
-    /* ---------- tenant auth (dashboard) ---------- */
-    async function requireDashboardFor(tenant: string): Promise<Response | null> {
-      const cfg = await getHostConfig(env.CRAWLER_KV, tenant);
-      if (!cfg) return unauthorized("tenant_not_configured");
-
-      if (!hostAllowed(cfg, tenant)) return forbidden("host_not_allowed");
-
-      const provided = normalizeKey(request.headers.get("x-dashboard-key"));
-      const ok = await verifyKeyOrNull(provided, cfg.dashboard_key_hash);
-
-      // optional transition fallback
-      if (!ok && env.DASHBOARD_KEY) {
-        if (provided === env.DASHBOARD_KEY) return null;
-      }
-
-      return ok ? null : unauthorized("dashboard_unauthorized");
     }
 
     /* ---------- events (requires dashboard key) ---------- */
@@ -137,15 +159,10 @@ export default {
       const authErr = await requireDashboardFor(tenantHost);
       if (authErr) return authErr;
 
-      const raw = await env.CRAWLER_KV.get(`events:recent:${hostKey}`);
+      const raw = await env.CRAWLER_KV.get(`events:recent:${tenantKey}`);
       const events: BotHit[] = raw ? (JSON.parse(raw) as BotHit[]) : [];
 
-      return json({
-        ok: true,
-        host: tenantHost,
-        count: events.length,
-        events,
-      });
+      return json({ ok: true, host: tenantHost, count: events.length, events });
     }
 
     /* ---------- stats (requires dashboard key) ---------- */
@@ -157,7 +174,7 @@ export default {
       const stats: Record<string, any> = {};
 
       for (const fam of families) {
-        stats[fam] = await readStats(env.CRAWLER_KV, hostKey, fam);
+        stats[fam] = await readStats(env.CRAWLER_KV, tenantKey, fam);
       }
 
       const cfg = await getHostConfig(env.CRAWLER_KV, tenantHost);
@@ -187,7 +204,7 @@ export default {
       }
 
       const cfg = await getHostConfig(env.CRAWLER_KV, tenantHost);
-      const data = await readHourlyRollups(env.CRAWLER_KV, hostKey, family, range);
+      const data = await readHourlyRollups(env.CRAWLER_KV, tenantKey, family, range);
 
       return json({
         ok: true,
@@ -207,28 +224,15 @@ export default {
         return badRequest("payload requires at least { ua: string }");
       }
 
-      const ingestTenantHost = typeof payload.host === "string" && payload.host.trim()
-        ? payload.host.trim()
-        : host;
+      const ingestTenantHost =
+        typeof payload.host === "string" && payload.host.trim()
+          ? payload.host.trim()
+          : workerHost;
 
-      // tenant key for storage
-      const ingestHostKey = tenantKeyFromHost(ingestTenantHost);
+      const ingestAuthErr = await requireIngestFor(ingestTenantHost);
+      if (ingestAuthErr) return ingestAuthErr;
 
-      const cfg = await getHostConfig(env.CRAWLER_KV, ingestTenantHost);
-      if (!cfg) return unauthorized("tenant_not_configured");
-
-      if (!hostAllowed(cfg, ingestTenantHost)) return forbidden("host_not_allowed");
-
-      // verify ingest key
-      const provided = normalizeKey(request.headers.get("x-ingest-key"));
-      const okIngest = await verifyKeyOrNull(provided, cfg.ingest_key_hash);
-
-      // optional transition fallback
-      if (!okIngest && env.INGEST_KEY) {
-        if (provided !== env.INGEST_KEY) return unauthorized("ingest_unauthorized");
-      } else if (!okIngest && !env.INGEST_KEY) {
-        return unauthorized("ingest_unauthorized");
-      }
+      const ingestTenantKey = tenantKeyFromHost(ingestTenantHost);
 
       const d = detectBot(payload.ua || "");
       if (!d) return json({ ok: true, ignored: true });
@@ -248,7 +252,7 @@ export default {
         reason: d.reason,
       };
 
-      ctx.waitUntil(recordHit(env.CRAWLER_KV, ingestHostKey, hit));
+      ctx.waitUntil(recordHit(env.CRAWLER_KV, ingestTenantKey, hit));
       return json({ ok: true, stored: true, family: d.family, type: d.type });
     }
 
@@ -261,7 +265,7 @@ export default {
         ts: new Date().toISOString(),
         ip: getClientIp(request),
         ua,
-        host, // native worker host
+        host: workerHost, // native worker host
         path: url.pathname,
         method: request.method,
         country: (request as any).cf?.country ?? null,
@@ -272,8 +276,8 @@ export default {
         reason: detected.reason,
       };
 
-      const nativeHostKey = tenantKeyFromHost(host);
-      ctx.waitUntil(recordHit(env.CRAWLER_KV, nativeHostKey, hit));
+      const nativeKey = tenantKeyFromHost(workerHost);
+      ctx.waitUntil(recordHit(env.CRAWLER_KV, nativeKey, hit));
     }
 
     /* ---------- site response ---------- */
